@@ -1,0 +1,896 @@
+<!doctype html>
+<html lang="en">
+ <head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <meta name="theme-color" content="#000000">
+  <meta name="referrer" content="no-referrer">
+  <title>Live Player</title>
+  <link rel="stylesheet" href="https://cdn.plyr.io/3.7.8/plyr.css">
+  <style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  width: 100%;
+  height: 100%;
+  height: 100dvh;
+  overflow: hidden;
+  background: #000;
+}
+
+.player-container {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  height: 100dvh;
+  background: #000;
+}
+
+video { width: 100%; height: 100%; object-fit: contain; background: #000; }
+
+.plyr {
+  width: 100%;
+  height: 100%;
+  --plyr-color-main: #3b82f6;          /* blue accent */
+  --plyr-video-background: #000;
+  --plyr-menu-background: #151515;
+  --plyr-menu-color: #fff;
+  --plyr-control-radius: 5px;
+}
+
+.plyr--video .plyr__controls {
+  padding: 15px 12px;
+  background: linear-gradient(transparent, rgba(0,0,0,.9));
+}
+
+.plyr__video-wrapper { height: 100%; background: #000; }
+.plyr__video-wrapper video { object-fit: contain; }
+
+/* ---------- status pill ---------- */
+.status {
+  position: absolute;
+  z-index: 5;
+  top: 15px;
+  left: 15px;
+  color: #fff;
+  background: rgba(20,20,20,.8);
+  border: 1px solid #333;
+  padding: 7px 11px;
+  border-radius: 5px;
+  font: 12px Arial, sans-serif;
+  pointer-events: none;
+}
+
+.status::before {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  background: #3b82f6;                 /* blue dot */
+  border-radius: 50%;
+  margin-right: 7px;
+}
+
+/* ---------- loading ---------- */
+.loading {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0,0,0,.55);
+  pointer-events: none;
+}
+
+.loading.hidden { display: none; }
+
+.spinner {
+  width: 40px;
+  height: 40px;
+  border: 3px solid rgba(255,255,255,.15);
+  border-top-color: #3b82f6;            /* blue spinner */
+  border-radius: 50%;
+  animation: spin 0.9s linear infinite;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ---------- overlay / error / url form ---------- */
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: radial-gradient(circle at 50% 40%, #161616, #000 72%);
+  color: #eee;
+  font: 15px/1.5 system-ui, -apple-system, Segoe UI, Arial, sans-serif;
+}
+
+.overlay.visible { display: flex; }
+.overlay-box { width: 100%; max-width: 460px; text-align: center; }
+
+.overlay h1 {
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: .3px;
+  margin-bottom: 10px;
+}
+
+.overlay p {
+  font-size: 13px;
+  color: #9a9a9a;
+  margin-bottom: 18px;
+  word-break: break-word;
+}
+
+.overlay code {
+  background: #1d1d1d;
+  border: 1px solid #2e2e2e;
+  border-radius: 4px;
+  padding: 1px 5px;
+  color: #3b82f6;                      /* blue code */
+}
+
+.overlay form { display: flex; gap: 8px; }
+
+.overlay input {
+  flex: 1;
+  min-width: 0;
+  padding: 11px 12px;
+  font-size: 13px;
+  color: #fff;
+  background: #111;
+  border: 1px solid #2e2e2e;
+  border-radius: 6px;
+  outline: none;
+}
+
+.overlay input:focus { border-color: #3b82f6; }
+
+.overlay button {
+  padding: 0 18px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #fff;
+  background: #3b82f6;                 /* blue button */
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.overlay button:hover { background: #60a5fa; }
+
+#retry-btn { margin-top: 4px; }
+
+@media (orientation: portrait) {
+  .plyr__video-wrapper video { object-fit: contain; }
+}
+</style>
+ </head>
+ <body>
+  <div class="player-container">
+   <video id="video" playsinline preload="metadata"></video>
+   <div class="status" id="status">Connecting</div>
+   <div class="loading" id="loading">
+    <div class="spinner"></div>
+   </div>
+   <div class="overlay" id="overlay">
+    <div class="overlay-box">
+     <h1 id="overlay-title">Live Player</h1>
+     <p id="overlay-msg">Add a stream to the address bar:
+      <br>
+      <code>?url=https%3A%2F%2Fexample.com%2Fstream.m3u8</code></p>
+     <form id="url-form" autocomplete="off">
+      <input id="url-input" type="text" inputmode="url" spellcheck="false" placeholder="https://example.com/stream.m3u8">
+      <button type="submit">Play</button>
+     </form>
+     <button id="retry-btn" style="display:none;margin-top:14px;">↻ Retry</button>
+    </div>
+   </div>
+  </div>
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js"></script>
+  <script src="https://cdn.plyr.io/3.7.8/plyr.js"></script>
+  <script>
+(function () {
+  'use strict';
+
+  /* =========================================================
+     CONFIG
+     ========================================================= */
+
+  const params = new URLSearchParams(location.search);
+
+  const AUTOPLAY     = params.get('autoplay') === '1';
+  const MUTED        = params.get('muted') === '1' || AUTOPLAY;
+  const DEFAULT_STREAM = '';
+
+  // Proxy prefixes tried in order AFTER the direct URL fails.
+  // The target URL is appended URL-encoded. '' = skip.
+  const PROXIES = [
+    '',
+    '',
+    ''
+  ];
+
+  /* =========================================================
+     SEGMENT-EXTENSION TUNABLES
+     ========================================================= */
+
+  let vodSafetyMs  = 8000;   // seconds of slack before generating future segments
+  let vodExtendOff = false;  // kill-switch after repeated 404s
+  let vod404Count  = 0;
+
+  /* =========================================================
+     ELEMENTS / STATE
+     ========================================================= */
+
+  const video       = document.getElementById('video');
+  const statusEl    = document.getElementById('status');
+  const loadingEl   = document.getElementById('loading');
+  const overlay     = document.getElementById('overlay');
+  const overlayMsg  = document.getElementById('overlay-msg');
+  const overlayTtl  = document.getElementById('overlay-title');
+  const retryBtn    = document.getElementById('retry-btn');
+  const form        = document.getElementById('url-form');
+  const input       = document.getElementById('url-input');
+
+  let hls          = null;
+  let player       = null;
+  let streamGen    = 0;
+  let qualityKey   = null;
+  let lastUrl      = '';
+  let resetting    = false;
+
+  /* =========================================================
+     HELPERS
+     ========================================================= */
+
+  function setStatus(text) { statusEl.textContent = text; }
+
+  function showLoading() {
+    if (!resetting) loadingEl.classList.remove('hidden');
+  }
+
+  function hideLoading() {
+    loadingEl.classList.add('hidden');
+  }
+
+  function showOverlay(title, message, showRetry) {
+    overlayTtl.textContent = title || 'Live Player';
+    if (message) overlayMsg.innerHTML = message;
+    retryBtn.style.display = showRetry ? 'inline-block' : 'none';
+    form.style.display = showRetry ? 'none' : 'flex';
+    overlay.classList.add('visible');
+  }
+
+  function hideOverlay() { overlay.classList.remove('visible'); }
+
+  function fail(message) {
+    setStatus('Error');
+    if (hls) { try { hls.destroy(); } catch (e) {} hls = null; }
+    hideLoading();
+    showOverlay('Playback failed', message, true);
+  }
+
+  // Strip junk, pipes and repeated encodings
+  function cleanUrl(u) {
+    let url = String(u || '').trim().split('|')[0].trim().replace(/[,\s]+$/, '');
+    for (let i = 0; i < 2 && url && !/^https?:\/\//i.test(url); i++) {
+      try { url = decodeURIComponent(url); } catch (e) { break; }
+    }
+    return url;
+  }
+
+  function isHttpUrl(u) {
+    try {
+      const p = new URL(u);
+      return p.protocol === 'http:' || p.protocol === 'https:';
+    } catch (e) { return false; }
+  }
+
+  // Unwrap a previously-proxied URL back to the origin
+  function unwrapProxy(u) {
+    let cur = cleanUrl(u), guard = 0;
+    while (guard++ < 4 && cur) {
+      const m = cur.match(/https?:\/\/[^/]+(?:\/api)?(?:\/public)?\/(?:proxy|px)(?:\/[^?]*)?\?(?:u|url)=(.+)$/i);
+      if (!m) break;
+      try { cur = cleanUrl(decodeURIComponent(m[1])); } catch (e) { cur = cleanUrl(m[1]); }
+    }
+    return cur;
+  }
+
+  // Direct URL first, then each proxy — used for failover on network errors
+  function buildCandidates(raw) {
+    const origin = unwrapProxy(raw);
+    const list = [origin];
+    PROXIES.forEach(function (prefix) {
+      if (prefix) list.push(prefix + encodeURIComponent(origin));
+    });
+    return list;
+  }
+
+  const DIRECT_FILE_RE = /\.(mp4|m4v|webm|ogv|ogg|mov|mkv)(\?|#|$)/i;
+
+  function isHlsUrl(url) {
+    if (/\.m3u8(\?|#|$)/i.test(url)) return true;
+    if (DIRECT_FILE_RE.test(url)) return false;
+    return !!(window.Hls && Hls.isSupported());
+  }
+
+  /* =========================================================
+     SCREEN ORIENTATION (rotate to landscape in fullscreen)
+     ========================================================= */
+
+  let orientationLocked = false;
+
+  function lockLandscape() {
+    // Only available in fullscreen + on supporting browsers (mostly mobile)
+    if (!screen.orientation || typeof screen.orientation.lock !== 'function') return;
+
+    // Must be in fullscreen for the lock to be accepted
+    const inFs = document.fullscreenElement ||
+                 document.webkitFullscreenElement ||
+                 document.mozFullScreenElement ||
+                 document.msFullscreenElement;
+
+    const attempt = function () {
+      screen.orientation.lock('landscape')
+        .then(function () { orientationLocked = true; })
+        .catch(function () { /* unsupported / denied — ignore */ });
+    };
+
+    if (inFs) {
+      attempt();
+    } else {
+      // Wait for the browser to enter fullscreen first
+      setTimeout(attempt, 120);
+    }
+  }
+
+  function unlockOrientation() {
+    try {
+      if (screen.orientation && typeof screen.orientation.unlock === 'function') {
+        screen.orientation.unlock();
+      }
+    } catch (e) {}
+    orientationLocked = false;
+  }
+
+  // Fallback in case Plyr events don't fire (native iOS fullscreen, etc.)
+  function onFsChange() {
+    const inFs = document.fullscreenElement ||
+                 document.webkitFullscreenElement ||
+                 document.mozFullScreenElement ||
+                 document.msFullscreenElement;
+
+    if (inFs) {
+      lockLandscape();
+    } else {
+      unlockOrientation();
+    }
+  }
+
+  document.addEventListener('fullscreenchange', onFsChange);
+  document.addEventListener('webkitfullscreenchange', onFsChange);
+  document.addEventListener('mozfullscreenchange', onFsChange);
+  document.addEventListener('MSFullscreenChange', onFsChange);
+
+  // Re-apply lock if the user rotates the device back to portrait while
+  // still in fullscreen (some browsers drop the lock on rotation).
+  if (screen.orientation && screen.orientation.addEventListener) {
+    screen.orientation.addEventListener('change', function () {
+      const inFs = document.fullscreenElement ||
+                   document.webkitFullscreenElement ||
+                   document.mozFullScreenElement ||
+                   document.msFullscreenElement;
+      if (inFs && screen.orientation.type && screen.orientation.type.indexOf('portrait') === 0) {
+        lockLandscape();
+      }
+    });
+  }
+
+  /* =========================================================
+     SEGMENT LOGIC #1 — STALE LIVE PLAYLIST EXTENSION
+     ---------------------------------------------------------
+     When a live CDN stops refreshing its media playlist, the
+     last segment URL is parsed (`...-123.ts`) and future
+     sequence numbers are generated from PROGRAM-DATE-TIME so
+     the player keeps requesting fresh segments instead of
+     stalling on a frozen playlist.
+     ========================================================= */
+
+  function extendStalePlaylist(text) {
+    if (vodExtendOff || !text) return text;
+    if (text.indexOf('#EXTINF:') === -1) return text;          // not a media playlist
+    if (text.indexOf('#EXT-X-STREAM-INF') !== -1) return text; // master playlist
+    if (text.indexOf('#EXT-X-ENDLIST') !== -1) return text;    // true VOD
+
+    const lines = text.split('\n');
+    const entries = [], headerLines = [];
+    let inHeader = true, curDur = '4.000', curPdt = '';
+
+    for (let i = 0; i < lines.length; i++) {
+      const l = lines[i].trim();
+      if (!l) continue;
+
+      if (l.indexOf('#EXTINF:') === 0) {
+        inHeader = false;
+        const dm = l.match(/#EXTINF:([0-9.]+)/);
+        if (dm) curDur = dm[1];
+
+      } else if (l.indexOf('#EXT-X-PROGRAM-DATE-TIME:') === 0) {
+        inHeader = false;
+        curPdt = l.substring(25).trim();
+
+      } else if (l.charAt(0) === '#') {
+        if (inHeader && l.indexOf('#EXT-X-MEDIA-SEQUENCE:') !== 0) headerLines.push(l);
+
+      } else {
+        inHeader = false;
+        entries.push({ dur: curDur, pdt: curPdt, uri: l });
+        curPdt = '';
+      }
+    }
+
+    if (!entries.length) return text;
+
+    const last = entries[entries.length - 1];
+    if (!last.pdt) return text;
+
+    const lastMs = Date.parse(last.pdt);
+    if (!lastMs || isNaN(lastMs)) return text;
+
+    const seg = last.uri.match(/^(.*-)(\d+)(\.ts.*)$/i);
+    if (!seg) return text;
+
+    const prefix  = seg[1];
+    const lastSeq = parseInt(seg[2], 10);
+    const suffix  = seg[3];
+    const segDurMs = Math.max(1000, Math.round((parseFloat(last.dur) || 4) * 1000));
+
+    // How many segments are missing since the playlist froze
+    const elapsed = Math.floor((Date.now() - lastMs - vodSafetyMs) / segDurMs);
+    if (elapsed <= 0 || elapsed > 10800) return text; // fresh playlist or too old
+
+    const windowSize = 75;
+    const seqMatch = text.match(/#EXT-X-MEDIA-SEQUENCE:(\d+)/);
+    const baseSeq  = seqMatch ? parseInt(seqMatch[1], 10) : 0;
+    const startOff = Math.max(1, elapsed - (windowSize - 1));
+    const totalV   = entries.length + elapsed;
+    const newBase  = baseSeq + Math.max(0, totalV - windowSize);
+
+    const finals = [];
+    if (startOff === 1) {
+      const keep = Math.max(0, entries.length - (windowSize - elapsed));
+      for (let i = keep; i < entries.length; i++) finals.push(entries[i]);
+    }
+
+    for (let k = startOff; k <= elapsed; k++) {
+      finals.push({
+        dur: last.dur,
+        pdt: new Date(lastMs + k * segDurMs).toISOString(),
+        uri: prefix + (lastSeq + k) + suffix
+      });
+    }
+
+    const out = headerLines.slice();
+    out.push('#EXT-X-MEDIA-SEQUENCE:' + newBase);
+
+    for (let j = 0; j < finals.length; j++) {
+      out.push('#EXTINF:' + finals[j].dur + ',');
+      if (finals[j].pdt) out.push('#EXT-X-PROGRAM-DATE-TIME:' + finals[j].pdt);
+      out.push(finals[j].uri);
+    }
+
+    return out.join('\n') + '\n';
+  }
+
+  /* =========================================================
+     SEGMENT LOGIC #2 — NO-CACHE PLAYLIST LOADER
+     ---------------------------------------------------------
+     Replaces the default hls.js playlist loader so every
+     manifest fetch bypasses the browser cache and runs
+     through extendStalePlaylist().
+     ========================================================= */
+
+  function NoCacheLoader() {
+    this._aborted = false;
+  }
+
+  NoCacheLoader.prototype.destroy = function () { this._aborted = true; };
+  NoCacheLoader.prototype.abort   = function () { this._aborted = true; };
+
+  NoCacheLoader.prototype.load = function (ctx, cfg, cb) {
+    const self = this;
+    const t0 = performance.now();
+    const url = (ctx && ctx.url) || '';
+
+    fetch(url, { cache: 'no-store' })
+      .then(function (res) {
+        if (self._aborted) return;
+
+        if (!res.ok) {
+          cb.onError({ code: res.status, text: 'HTTP ' + res.status }, ctx, res, {});
+          return;
+        }
+
+        return res.text().then(function (data) {
+          if (self._aborted) return;
+
+          const final = extendStalePlaylist(data);
+          const now = performance.now();
+
+          cb.onSuccess(
+            { url: url, data: final },
+            {
+              aborted: false,
+              loaded: final.length,
+              total: final.length,
+              retry: 0,
+              chunkCount: 0,
+              bwEstimate: 0,
+              trequest: t0,
+              tfirst: now,
+              tload: now,
+              loading: { start: t0, first: now, end: now },
+              parsing: { start: 0, end: 0 },
+              buffering: { start: 0, end: 0 }
+            },
+            ctx,
+            res
+          );
+        });
+      })
+      .catch(function (e) {
+        if (!self._aborted) {
+          cb.onError({ code: 0, text: (e && e.message) || 'Network error' }, ctx, null, {});
+        }
+      });
+  };
+
+  /* =========================================================
+     PLAYER (Plyr UI + HLS.js engine)
+     ========================================================= */
+
+  function teardown() {
+    resetting = true;
+
+    if (hls) { try { hls.destroy(); } catch (e) {} hls = null; }
+    if (player) { try { player.destroy(); } catch (e) {} player = null; }
+
+    try {
+      video.pause();
+      video.removeAttribute('src');
+    } catch (e) {}
+
+    qualityKey = null;
+    setTimeout(function () { resetting = false; }, 50);
+  }
+
+  function changeQuality(height) {
+    if (!hls) return;
+    const h = Number(height);
+
+    if (!h) {
+      hls.currentLevel = -1;   // Auto
+      setStatus('Auto');
+      return;
+    }
+
+    const index = hls.levels.findIndex(function (level) {
+      return level.height === h;
+    });
+
+    if (index !== -1) {
+      hls.currentLevel = index;
+      setStatus(h + 'p');
+    }
+  }
+
+  function initPlayer(heights) {
+    if (player) { try { player.destroy(); } catch (e) {} player = null; }
+
+    const options = {
+      autoplay: AUTOPLAY,
+      muted: MUTED,
+      clickToPlay: true,
+      hideControls: true,
+      resetOnEnd: false,
+      keyboard: { focused: true, global: true },
+      tooltips: { controls: true, seek: true },
+      fullscreen: { enabled: true, fallback: true, iosNative: true },
+      settings: ['speed'],
+      speed: { selected: 1, options: [0.5, 0.75, 1, 1.25, 1.5, 2] }
+    };
+
+    if (heights && heights.length) {
+      const opts = [0].concat(heights);
+      const labels = { 0: 'Auto' };
+      heights.forEach(function (h) { labels[h] = h + 'p'; });
+
+      options.settings = ['quality', 'speed'];
+      options.quality = {
+        default: 0,
+        options: opts,
+        forced: true,
+        onChange: changeQuality
+      };
+      options.i18n = { qualityLabel: labels };
+    }
+
+    player = new Plyr(video, options);
+
+    player.on('playing', function () { if (!resetting) setStatus('Playing'); });
+    player.on('waiting', function () { if (!resetting) setStatus('Buffering'); });
+    player.on('stalled', function () { if (!resetting) setStatus('Buffering'); });
+    player.on('canplay', function () { if (!resetting) setStatus('Ready'); });
+    player.on('ended',   function () { setStatus('Ended'); });
+    player.on('error',   function () { if (!resetting) setStatus('Playback error'); });
+
+    // ---- rotate to landscape on fullscreen ----
+    player.on('enterfullscreen', function () { lockLandscape(); });
+    player.on('exitfullscreen',  function () { unlockOrientation(); });
+  }
+
+  function tryAutoplay() {
+    if (!AUTOPLAY || !player) return;
+
+    const p = player.play();
+    if (p && typeof p.catch === 'function') {
+      p.catch(function () { setStatus('Tap play to start'); });
+    }
+  }
+
+  /* =========================================================
+     DIRECT FILE (mp4 / webm …)
+     ========================================================= */
+
+  function loadDirect(url) {
+    initPlayer([]);
+    video.src = url;
+    video.load();
+    hideOverlay();
+    setStatus('Ready');
+    tryAutoplay();
+  }
+
+  /* =========================================================
+     HLS ENGINE
+     ========================================================= */
+
+  function startHls(rawUrl) {
+    const gen = ++streamGen;
+    const candidates = buildCandidates(rawUrl);
+
+    let candidateIdx = 0;
+    let netRetries = 0;
+    let mediaRetries = 0;
+
+    // ---- Native HLS (iOS / Safari) ----
+    if (!window.Hls || !Hls.isSupported()) {
+      if (video.canPlayType('application/vnd.apple.mpegurl')) {
+        initPlayer([]);
+        video.src = candidates[0];
+        video.load();
+        hideOverlay();
+        setStatus('Ready');
+        tryAutoplay();
+        return;
+      }
+      fail('HLS playback is not supported in this browser.');
+      return;
+    }
+
+    if (hls) { try { hls.destroy(); } catch (e) {} hls = null; }
+
+    hls = new Hls({
+      enableWorker: true,
+      lowLatencyMode: false,
+      liveSyncDurationCount: 3,
+      liveMaxLatencyDurationCount: 10,
+      maxBufferLength: 30,
+      maxMaxBufferLength: 60,
+      startLevel: -1,
+      capLevelToPlayerSize: false,
+      pLoader: NoCacheLoader,          // no-cache + stale-playlist extension
+      xhrSetup: function (xhr) { xhr.withCredentials = false; }
+    });
+
+    setStatus('Loading manifest');
+    showLoading();
+
+    hls.on(Hls.Events.MANIFEST_PARSED, function () {
+      if (streamGen !== gen) return;
+
+      netRetries = 0;
+      hideOverlay();
+      hideLoading();
+      setStatus('Ready');
+
+      // Build the quality list from the manifest (deduped, high → low)
+      const heights = [];
+      hls.levels.forEach(function (level) {
+        if (level.height > 0 && heights.indexOf(level.height) === -1) {
+          heights.push(level.height);
+        }
+      });
+      heights.sort(function (a, b) { return b - a; });
+
+      const key = heights.join(',');
+
+      // Rebuild Plyr only when the rendition set actually changed
+      if (!player || key !== qualityKey) {
+        qualityKey = key;
+        initPlayer(heights);
+      }
+
+      tryAutoplay();
+    });
+
+    hls.on(Hls.Events.FRAG_LOADED, function () {
+      if (streamGen !== gen) return;
+      netRetries = 0;
+      hideLoading();
+    });
+
+    hls.on(Hls.Events.LEVEL_SWITCHED, function (_, data) {
+      if (streamGen !== gen || !hls || !hls.autoLevelEnabled) return;
+      const level = hls.levels[data.level];
+      if (level && level.height) setStatus('Auto · ' + level.height + 'p');
+    });
+
+    // Count 404s on generated segments → back off, then disable extension
+    hls.on(Hls.Events.FRAG_LOAD_ERROR, function (_, data) {
+      if (data && data.response && data.response.code === 404) {
+        vod404Count++;
+        vodSafetyMs = Math.min(60000, vodSafetyMs + 8000);
+        if (vod404Count >= 5) vodExtendOff = true;
+      }
+    });
+
+    hls.on(Hls.Events.ERROR, function (_, data) {
+      if (streamGen !== gen || !data.fatal) return;
+
+      /* ---- NETWORK ---- */
+      if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+
+        // 1) next proxy / direct candidate
+        if (candidateIdx + 1 < candidates.length) {
+          candidateIdx++;
+          netRetries = 0;
+          setStatus('Retrying via proxy ' + candidateIdx);
+          try {
+            hls.loadSource(candidates[candidateIdx]);
+            hls.startLoad();
+          } catch (e) { fail('Stream unavailable.'); }
+          return;
+        }
+
+        // 2) one plain reconnect
+        if (netRetries < 1) {
+          netRetries++;
+          setStatus('Reconnecting');
+          try { hls.startLoad(); } catch (e) {}
+          return;
+        }
+
+        fail('The stream could not be loaded. It may be offline, geo-blocked, or missing CORS headers.');
+        return;
+      }
+
+      /* ---- MEDIA ---- */
+      if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+        if (mediaRetries < 1) {
+          mediaRetries++;
+          setStatus('Recovering playback');
+          hls.recoverMediaError();
+          return;
+        }
+        if (mediaRetries < 2) {
+          mediaRetries++;
+          setStatus('Recovering playback');
+          hls.swapAudioCodec();
+          hls.recoverMediaError();
+          return;
+        }
+        fail('This stream could not be decoded.');
+        return;
+      }
+
+      fail('Stream unavailable.');
+    });
+
+    hls.loadSource(candidates[0]);
+    hls.attachMedia(video);
+  }
+
+  /* =========================================================
+     MAIN LOAD
+     ========================================================= */
+
+  function load(rawUrl) {
+    const url = cleanUrl(rawUrl);
+
+    if (!isHttpUrl(url)) {
+      setStatus('Invalid url');
+      showOverlay('Invalid stream', 'The "url" parameter is not a valid http(s) link.', false);
+      return;
+    }
+
+    lastUrl = url;
+    teardown();
+    hideOverlay();
+    showLoading();
+    setStatus('Connecting');
+
+    // Reset segment-extension state for the new stream
+    vod404Count = 0;
+    vodExtendOff = false;
+    vodSafetyMs = 8000;
+
+    if (isHlsUrl(url)) {
+      startHls(url);
+    } else {
+      loadDirect(url);
+    }
+  }
+
+  /* =========================================================
+     UI EVENTS
+     ========================================================= */
+
+  form.addEventListener('submit', function (event) {
+    event.preventDefault();
+
+    const url = cleanUrl(input.value);
+
+    if (!isHttpUrl(url)) {
+      overlayMsg.textContent = 'Enter a valid http(s) stream URL.';
+      return;
+    }
+
+    try {
+      history.replaceState(null, '', location.pathname + '?url=' + encodeURIComponent(url));
+    } catch (e) {}
+
+    load(url);
+  });
+
+  retryBtn.addEventListener('click', function () {
+    hideOverlay();
+    load(lastUrl);
+  });
+
+  window.addEventListener('beforeunload', teardown);
+  window.addEventListener('pagehide', teardown);
+
+  /* =========================================================
+     BOOT
+     ========================================================= */
+
+  (function boot() {
+    const raw = params.get('url') || params.get('play') || DEFAULT_STREAM;
+
+    if (!raw) {
+      setStatus('No stream');
+      showOverlay('Live Player', null, false);
+      return;
+    }
+
+    load(raw);
+
+    // Safety net — never leave the spinner up forever
+    setTimeout(function () {
+      if (!overlay.classList.contains('visible')) hideLoading();
+    }, 12000);
+  })();
+
+})();
+</script>
+ </body>
+</html>
