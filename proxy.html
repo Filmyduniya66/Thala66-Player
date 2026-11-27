@@ -1,0 +1,268 @@
+
+const ACCESS_KEY = "CHANGE-THIS-TO-YOUR-SECRET-KEY";
+
+const MAX_REDIRECTS = 5;
+
+function validateTarget(url, workerHost) {
+  if (!["http:", "https:"].includes(url.protocol)) {
+    throw new Error("Only HTTP and HTTPS URLs are allowed");
+  }
+
+  if (url.username || url.password) {
+    throw new Error("URLs with credentials are not allowed");
+  }
+
+  if (url.hostname === workerHost) {
+    throw new Error("Proxy recursion is not allowed");
+  }
+
+  if (url.port && !["80", "443"].includes(url.port)) {
+    throw new Error("This port is not allowed");
+  }
+
+  const host = url.hostname.toLowerCase();
+
+  if (
+    host === "localhost" ||
+    host.endsWith(".localhost") ||
+    host.endsWith(".local") ||
+    host.endsWith(".internal") ||
+    host === "metadata.google.internal"
+  ) {
+    throw new Error("Private hosts are not allowed");
+  }
+
+  // Block private and reserved IPv4 addresses
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) {
+    const p = host.split(".").map(Number);
+
+    if (
+      p.some(n => n > 255) ||
+      p[0] === 0 ||
+      p[0] === 10 ||
+      p[0] === 127 ||
+      (p[0] === 169 && p[1] === 254) ||
+      (p[0] === 172 && p[1] >= 16 && p[1] <= 31) ||
+      (p[0] === 192 && p[1] === 168) ||
+      p[0] >= 224
+    ) {
+      throw new Error("Private IP addresses are not allowed");
+    }
+  }
+
+  // Block IPv6 literals
+  if (host.startsWith("[") || host.includes(":")) {
+    throw new Error("IPv6 addresses are not allowed");
+  }
+}
+
+function proxyUrl(target, base, key) {
+  const absolute = new URL(target, base);
+
+  const out = new URL(base.origin + "/");
+  out.searchParams.set("u", absolute.href);
+  out.searchParams.set("key", key);
+
+  return out.href;
+}
+
+function rewritePlaylist(text, base, key) {
+  // Rewrite URI attributes, including HLS key and map URLs
+  text = text.replace(
+    /URI="([^"]+)"/gi,
+    (match, uri) => {
+      if (/^(data:|skd:|blob:)/i.test(uri)) return match;
+
+      return `URI="${proxyUrl(uri, base, key)}"`;
+    }
+  );
+
+  // Rewrite playlist segment and variant URLs
+  return text.split(/\r?\n/).map(line => {
+    const value = line.trim();
+
+    if (
+      !value ||
+      value.startsWith("#") ||
+      /^(data:|skd:|blob:)/i.test(value)
+    ) {
+      return line;
+    }
+
+    return proxyUrl(value, base, key);
+  }).join("\n");
+}
+
+export default {
+  async fetch(request) {
+    const cors = {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+      "Access-Control-Allow-Headers": "Range, Accept, Content-Type",
+      "Access-Control-Expose-Headers":
+        "Content-Length, Content-Range, Accept-Ranges"
+    };
+
+    if (request.method === "OPTIONS") {
+      return new Response(null, { headers: cors });
+    }
+
+    if (!["GET", "HEAD"].includes(request.method)) {
+      return new Response("Method not allowed", {
+        status: 405,
+        headers: cors
+      });
+    }
+
+    const incoming = new URL(request.url);
+    const target = incoming.searchParams.get("u");
+    const key = incoming.searchParams.get("key");
+
+    if (key !== ACCESS_KEY) {
+      return new Response("Unauthorized: Invalid proxy key", {
+        status: 401,
+        headers: cors
+      });
+    }
+
+    if (!target) {
+      return new Response(
+        "SPORTLINK ALL-IN-ONE PROXY\n\n" +
+        "Usage: ?u=ENCODED_URL&key=YOUR_KEY\n\n" +
+        "Supports HTTP, HLS, M3U, JSON and TXT.",
+        {
+          headers: {
+            ...cors,
+            "Content-Type": "text/plain; charset=utf-8"
+          }
+        }
+      );
+    }
+
+    let current;
+
+    try {
+      current = new URL(target);
+      validateTarget(current, incoming.hostname);
+    } catch (e) {
+      return new Response("Invalid URL: " + e.message, {
+        status: 400,
+        headers: cors
+      });
+    }
+
+    const headers = new Headers();
+
+    for (const name of [
+      "accept",
+      "accept-language",
+      "range",
+      "if-none-match",
+      "if-modified-since"
+    ]) {
+      const value = request.headers.get(name);
+      if (value) headers.set(name, value);
+    }
+
+    let upstream;
+
+    try {
+      for (let i = 0; i <= MAX_REDIRECTS; i++) {
+        upstream = await fetch(current.href, {
+          method: request.method,
+          headers,
+          redirect: "manual"
+        });
+
+        if (
+          [301, 302, 303, 307, 308].includes(upstream.status)
+        ) {
+          const location = upstream.headers.get("Location");
+
+          if (!location || i === MAX_REDIRECTS) {
+            return new Response("Too many or invalid redirects", {
+              status: 502,
+              headers: cors
+            });
+          }
+
+          const next = new URL(location, current);
+          validateTarget(next, incoming.hostname);
+          current = next;
+          continue;
+        }
+
+        break;
+      }
+    } catch (e) {
+      return new Response("Upstream error: " + e.message, {
+        status: 502,
+        headers: cors
+      });
+    }
+
+    const responseHeaders = new Headers(upstream.headers);
+
+    responseHeaders.delete("set-cookie");
+    responseHeaders.delete("content-length");
+    responseHeaders.delete("content-encoding");
+
+    for (const [name, value] of Object.entries(cors)) {
+      responseHeaders.set(name, value);
+    }
+
+    responseHeaders.set("Cache-Control", "no-store");
+
+    const type = responseHeaders.get("content-type") || "";
+    const isPlaylist =
+      /\.m3u8?($|[?#])/i.test(current.href) ||
+      /mpegurl/i.test(type);
+
+    if (
+      request.method === "GET" &&
+      upstream.ok &&
+      isPlaylist
+    ) {
+      try {
+        const body = await upstream.text();
+
+        if (body.trimStart().startsWith("#EXTM3U")) {
+          const rewritten = rewritePlaylist(
+            body,
+            incoming,
+            key
+          );
+
+          responseHeaders.set(
+            "Content-Type",
+            "application/vnd.apple.mpegurl"
+          );
+
+          return new Response(rewritten, {
+            status: upstream.status,
+            headers: responseHeaders
+          });
+        }
+
+        return new Response(body, {
+          status: upstream.status,
+          headers: responseHeaders
+        });
+      } catch (e) {
+        return new Response("Playlist error: " + e.message, {
+          status: 502,
+          headers: cors
+        });
+      }
+    }
+
+    return new Response(
+      request.method === "HEAD" ? null : upstream.body,
+      {
+        status: upstream.status,
+        statusText: upstream.statusText,
+        headers: responseHeaders
+      }
+    );
+  }
+};
